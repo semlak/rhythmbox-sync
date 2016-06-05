@@ -1,0 +1,9 @@
+[Plugin]
+Loader=python3
+Module=rhythmbox-sync
+IAge=2
+Name=RhythmboxSync
+Description=Manage your Rhythmbox Library accross multiple devices, specifially to maintain ratings and playcounts accross devices. Hope to include support for some android players. Uses a cloud server to manage. Includes some changes to rhythmboxdb, mainly that it adds field for the date the rating or playcount was changed.
+Authors=Joseph Semlak <semlak@gmail.com>
+Copyright=Copyright © 2016 Joseph Semlak
+Website=https://github.com/semlak
