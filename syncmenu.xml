@@ -1,0 +1,9 @@
+<ui> 
+  <menubar name="MenuBar"> 
+    <menu name="SyncMenu" action="Sync"> 
+        <menu name="PlaylistMenu" action="Playlist">
+         <menuitem name="SyncPlaylist" action="SyncPlaylist"/>
+        </menu>
+    </menu>
+  </menubar>
+</ui>
