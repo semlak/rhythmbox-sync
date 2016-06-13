@@ -1,6 +1,10 @@
 # Rhythmbox-Sync Plugin
+
+#USE at your own risk.
+
 Rhythmbox plugin for syncing Music settings accross devices, using cloud server that you need to setup. Focusing on maintaining track ratings and play counts across devices. Would also like to support any other music library and metadata changes, so that you can update track info and have it get synced. Hope to include support for some android players.
 
+You would use this in conjuction with https://github.com/semlak/rbsync-cloud, which is also incomplete.
 
 NOTE: THIS PLUGIN CURRENTLY IS INCOMPLETE!!!. It currently lacks even the basic desired functionality. Right now, I'm still trying to get the basic funcationality working, so this plugin is basically useless.
 
@@ -25,5 +29,29 @@ Other notes:
 
 Track properties that I attempt to support:
      Incomplete, but includes rating and playcount.
+
+IDENTIFYING IDENTICAL TRACKS ACROSS DEVICES:
+Identifying identical songs on different devices could be tricky because their full pathnames might not
+match. Their base filenames might not even match, as different devices may have different filesystems, or copying the songs
+may have introduced changes in filename.
+Rhythmbox appears to use the tracks absolute path as the unique identify for the DB. Which has some complications even on single system
+     If a filename changes, RB marks the entry as hidden. When rescanning library, it considers the new filename a new entry
+          it doesn't seem to keep the associated data
+     If there is a symbolic link to a file, RB would consider the link and the actual file separate entries.
+     This allows different songs to have the same base name but different paths (example: same song with different artists).
+          This is good, but suggests that we can't rely on just looking at the base file name to determine if songs are identical
+
+     RBSync tries to identify matching files between devices first by comparing paths. Thus, if you are able to use identical path structures
+          across devices, that will help with matching.
+          I would like to setup a feature where RBSync handles the copying of part or all of a music collection between devices
+               but right now, it only syncs metadata, not the actual music/tracks. But such a feature would help with identify identical tracks
+          In the likely scenario that RBSync is unable to match based on full path,
+               Would like to have matching method user customizable with possible feedback 
+               Try matching base filenames, artist, title.
+               Try matching base filenames, filesize, bitrate, other properties.
+                    None of these allow to identify identical tracks that are transcoded into different formats
+                    could try matching title, artist, with possibly base filename without extension.
+
+
 Installation Instructions
 * [Homepage](https://github.com/semlak/rhythmbox-sync)

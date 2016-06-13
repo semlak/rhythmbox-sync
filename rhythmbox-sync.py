@@ -4,11 +4,26 @@ from os.path import expanduser
 from time import time
 import sqlite3
 import math
+import requests
+import json
+# import urllib2
+
 
 
 home = expanduser("~")
 rbsyncdb = home + "/.local/share/rhythmbox/rbsync.db"
+cloudapp = 'http://localhost:8080'
+syncup_api = cloudapp + '/api/sync-up/'
+client_id = 1
 
+
+
+
+def dict_factory(cursor, row):
+	d = {}
+	for idx,col in enumerate(cursor.description):
+		d[col[0]] = row[idx]
+	return d
 
 class RBSync(GObject.Object, Peas.Activatable):
 	__gtype_name__ = 'RBSync'
@@ -17,10 +32,8 @@ class RBSync(GObject.Object, Peas.Activatable):
 
 	def __init__(self):
 		GObject.Object.__init__(self)
-		# self.shell = self.object
 		# self.connect_signals()
 
-		# self.db = self.shell.props.db
 		# print(dir(self.shell))
 		# print("self:" , dir(self))
 
@@ -30,20 +43,80 @@ class RBSync(GObject.Object, Peas.Activatable):
 
 
 	def connect_signals(self):
-		shell = self.object
 		# print(shell, dir(shell))
-		db = shell.props.db
+		# db = shell.props.db
 		# self.db = self.shell.props.db
 		# self.db.connect ('entry-changed', self.change_notify)
 
 		# ecs is "entry-changed signal"
-		self.ecs_id = db.connect ('entry-changed', self.change_notify)
+		self.ecs_id = self.db.connect ('entry-changed', self.change_notify)
 		# should also handle entry-added and entry-deleted
 
-		self.lcs_id = db.connect ('load-complete', self.db_load_complete_notify)
+		self.lcs_id = self.db.connect ('load-complete', self.db_load_complete_notify)
 
 	def db_load_complete_notify (self, dbtree):
-		self.sync(None, dbtree)
+		self.sync(None, None)
+		# 'hey'
+
+
+	def rbsync_update_track (self, entry, change):
+		# shell = self.object
+		# db = shell.props.db
+		# print(dir(db))
+		switch = {
+			RB.RhythmDBPropType.RATING 		: "rating",
+			RB.RhythmDBPropType.PLAY_COUNT 	: "play_count",
+			RB.RhythmDBPropType.TITLE 		: "title",
+			RB.RhythmDBPropType.TRACK_NUMBER 	: "track_number",
+			RB.RhythmDBPropType.DISC_NUMBER 	: "disc_number",
+			RB.RhythmDBPropType.BEATS_PER_MINUTE : "bpm",
+			RB.RhythmDBPropType.ARTIST 		: "artist",
+			RB.RhythmDBPropType.ALBUM 		: "album", 
+			RB.RhythmDBPropType.DATE 		: "date",
+			RB.RhythmDBPropType.TRACK_TOTAL 	: "track_total",
+			RB.RhythmDBPropType.DISC_TOTAL 	: "disc_total",
+			RB.RhythmDBPropType.MEDIA_TYPE 	: "media_type",
+			RB.RhythmDBPropType.ALBUM_ARTIST 	: "album_artist",
+			RB.RhythmDBPropType.COMPOSER 		: "composer",
+			RB.RhythmDBPropType.GENRE 		: "genre"
+			}
+
+		rb_entry_id = entry.get_ulong(RB.RhythmDBPropType.ENTRY_ID)
+		attr_to_update = change["prop"]
+		print("attr_to_update", attr_to_update)
+		attr_to_update_str = switch.get(attr_to_update, None)
+		new_value = change["new"]
+
+		# artist = GObject.Value()
+		# artist.init(GObject.TYPE_STRING)
+		# artist.set_string("Xena")
+		# attr_to_update = RB.RhythmDBPropType.ARTIST
+		# new_value = artist
+
+		# artist.set_static_string
+		# print("artist", artist)
+
+		if rb_entry_id in self.rbsync_updates_in_progress:
+			if attr_to_update_str in self.rbsync_updates_in_progress[rb_entry_id]:
+				print("error on attempting to update entry for the following entry: " + entry.get_string(RB.RhythmDBPropType.TITLE))
+				raise ValueError('When attempting to update an entry in rbsync internal database, rbsync found that it was already being updated')
+			else:
+				self.rbsync_updates_in_progress[rb_entry_id[attr_to_update_str]] = new_value
+				# self.rbsync_updates_in_progress[rb_entry_id[attr_to_update_str]] = None
+		else:
+			self.rbsync_updates_in_progress[rb_entry_id] = {attr_to_update_str : new_value}
+			# self.rbsync_updates_in_progress[rb_entry_id] = {attr_to_update_str : None}
+		print("rbsync_updates_in_progress just before rb update", self.rbsync_updates_in_progress)
+
+		self.db.entry_set(entry, attr_to_update, new_value)
+		self.db.commit()
+		print("done with update function, although entry change may be asynchronous")
+
+
+	def update_in_progress(self, rb_entry_id, attr_to_update, new_value):
+		return rb_entry_id in self.rbsync_updates_in_progress and attr_to_update in self.rbsync_updates_in_progress[rb_entry_id]
+
+
 
 	def change_notify (self, dbtree, entry, entryChanges):
 	# def change_notify():
@@ -53,8 +126,29 @@ class RBSync(GObject.Object, Peas.Activatable):
 			print(change.prop)
 			print(change.old)
 			print(change.new)
-			print(entry.get_string(RB.RhythmDBPropType.TITLE))
-			update = None
+			rb_entry_id = entry.get_ulong(RB.RhythmDBPropType.ENTRY_ID)
+			# print(dir(self))
+			print("rb_id", entry.get_ulong(RB.RhythmDBPropType.ENTRY_ID))
+			# if rb_entry_id == 82: self.rbsync_update_track(entry, change)
+			# print(entry.get_object(RB.RhythmDBPropType))
+			# print("count", self.db.entry_count())
+
+			#it is possible that this signal was received due to the user updating an attribute in rhythmbox (or otherwise not using rbsync)
+			#in that case, we want to proceed with updating the rbsync database, and include the ch_date attribute for that property as appropriate
+
+			#however, if the signal might also be received after rbsync tries to update a rhythmdb entry. In that case we don't necessarily want to make all
+			#the same changes to the rbsync database. Mainly, the ch_date attributes are for changes that were requested by the user locally. also, the local play
+			#count shouldn't be updated if the play count is updated due to a play on another device. 
+			#There is logic to detect it here and in the play_count specific update part of self.update_rbsync_db
+			
+			#We still want to update the rb attributes in rbsyncdb, but not the ch_date attributes
+
+			#After getting the property to update, we check if this property is one of the entries in the hash self.rbsync_updates_in_progress, and then use branch logic to make changes where appropriate
+
+			print("rbsync_updates_in_progress", self.rbsync_updates_in_progress)
+
+
+			attr_to_update = None
 
 			switch = {
 				RB.RhythmDBPropType.RATING 		: "rating",
@@ -74,13 +168,18 @@ class RBSync(GObject.Object, Peas.Activatable):
 				RB.RhythmDBPropType.GENRE 		: "genre"
 				}
 
-			update = switch.get(change.prop, None)
-			print("update", update)
+			attr_to_update = switch.get(change.prop, None)
+			print("attr_to_update", attr_to_update)
 
-			if update != None:
-				#this is a property we want to update, but we also need to update the ch_time for the property
-				action = [update, change.new, update+"_ch_time", self.get_time()]
-				self.sync(action, [[entry]])
+			if attr_to_update != None:
+				#check self.rbsync_updates_in_progress
+				if self.update_in_progress(rb_entry_id, attr_to_update, change.new) :
+					#this is a property we want to update, but no update to ch_time property
+					action = [attr_to_update, change.new]
+				else:
+					#this is a property we want to update, but we also need to update the ch_time for the property
+					action = [attr_to_update, change.new, attr_to_update+"_ch_time", self.get_time()]
+				self.add_or_update_rbsyncdb(action, [[entry]])
 			else:
 				#these are properties we want to update in the rbsyncdb, but don't need or even have a ch_time property
 				switch = {
@@ -101,15 +200,16 @@ class RBSync(GObject.Object, Peas.Activatable):
 					RB.RhythmDBPropType.HIDDEN		: "hidden"  	#could try taking a different action if file is hidden, 
 															#like seeing if it just changed names
 				}
-				update = switch.get(change.prop, None)
-				if update != None:
+				attr_to_update = switch.get(change.prop, None)
+				if attr_to_update != None:
 					#this is a property we want to update in the rbsyncdb, but don't need or even have a ch_time property
-					action = [update, change.new]
-					self.sync(action, [[entry]])
+					action = [attr_to_update, change.new]
+					self.add_or_update_rbsyncdb(action, [[entry]])
 				# else: 
 					#this is just a case where the property updated in rhythmbox is not one where rbsync cares about.
-
-
+			if rb_entry_id in self.rbsync_updates_in_progress and attr_to_update in self.rbsync_updates_in_progress[rb_entry_id]:
+				del self.rbsync_updates_in_progress[rb_entry_id][attr_to_update]
+			print("rbsync_updates_in_progress after rbsync entry update", self.rbsync_updates_in_progress)
 
 
 	def create_rbsyncdb_tables(self, conn):
@@ -118,7 +218,7 @@ class RBSync(GObject.Object, Peas.Activatable):
 			location		TEXT,
 			artist		text,
 			album		text,
-			album_date	integer,
+			year			integer,
 			track_number	integer,
 			disc_number	integer,
 			track_total	integer,
@@ -147,10 +247,11 @@ class RBSync(GObject.Object, Peas.Activatable):
 			bitrate		REAL,
 			hidden		integer
 			rbsync_id		integer,
+			sync_time		integer,
 			local_play_count		integer,
 			artist_ch_time			integer,
 			album_ch_time			integer,
-			album_date_ch_time		integer,
+			year_ch_time			integer,
 			track_number_ch_time	integer,
 			disc_number_ch_time		integer,
 			track_total_ch_time		integer,
@@ -177,6 +278,7 @@ class RBSync(GObject.Object, Peas.Activatable):
 		self.create_rbsyncdb_tables(conn) 
 		for entry in entries:
 			track_id = None  #to be filled in, but not used if only inserting a track
+			rb_entry_id = entry['rb_entry_id']
 			# cursor.execute('''select id,title,artist,album from track where title=:t and artist=:a and album=:al;''', 
 				# {"t": entry['title'], "a": entry['artist'], "al": entry['album']})
 			cursor.execute('''select id,title,artist,album,local_play_count from track where location=:l;''', 
@@ -188,6 +290,8 @@ class RBSync(GObject.Object, Peas.Activatable):
 			action = entry["action"]
 			if action != None:
 				print("action:", action)
+				#this is when track attribute is being updated. We are updating rbsynddb.
+				#note, I would like to make sure track is there.
 				# cursor.execute('''select id,title,artist,album from track where title=:t and artist=:a and album=:al;''', 
 				# 	{"t": entry['title'], "a": entry['artist'], "al": entry['album']})
 				#Note, I would like to consolidate this a bit so we don't search down here as well as up above
@@ -217,8 +321,8 @@ class RBSync(GObject.Object, Peas.Activatable):
 				else:
 					#should also verify that there is a valid track_id
 					# cursor.execute('''UPDATE track set (?) = (?) and set (?) = (?) where id = (?);''', ("rating_ch_time", self.get_time(), "rating", entry["rating"], track_id ))
-					if (len(action) == 4 and "play_count" in action ):
-						old_local_play_count = track_result[0][4]
+					if (len(action) == 4 and "play_count" in action and self.update_in_progress(rb_entry_id, "play_count", "") == False):
+						old_local_play_count = track_result[0][4] or 0
 						print("old_local_play_count:", old_local_play_count)
 						new_local_play_count = old_local_play_count + 1
 						sql_str = "UPDATE track SET " + action[0] + " = ?, " + action[2] + " = ?, local_play_count = ? where ID=?;"
@@ -244,12 +348,22 @@ class RBSync(GObject.Object, Peas.Activatable):
 					# print("\n\n" + istr)
 				if track_result == []:
 					# track_result
-					print ("inserting new track " + entry['title'])
-					cursor.execute('''INSERT INTO track (title, track_number, disc_number, track_total, disc_total, album_date, media_type, album_artist, 
+					#we could insert all of the entry properties into the rbsynddb, but almost any entry attribute could be empty, we want to avoid unnessecary attributes
+					#this seems to save some space with sqlite. Will save more if using xmldb or mongodb, or something that handles sparse tables well
+					for key in entry:
+						if type(entry[key]) == type(1):
+							if entry[key] == 0: entry[key] = None
+						elif type(entry[key]) == type(1.00):
+							if (entry[key] <= 0.05): entry[key] = None
+						elif type(entry[key]) == type ("string"):
+							if (entry[key] == ""): entry[key] = None
+
+					if entry['title'] != None: print ("inserting new track " + (entry['title']))
+					cursor.execute('''INSERT INTO track (title, track_number, disc_number, track_total, disc_total, year, media_type, album_artist, 
 						duration, file_size, location, mountpoint, mtime, first_seen, last_seen, rating, play_count, last_played, bitrate, status, 
 						description, subtitle, comment, post_time, bpm, artist, composer, genre, album, hidden, local_play_count)
 		 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);''', 
-		 				(entry['title'], entry['track_number'], entry['disc_number'], entry['track_total'], entry['disc_total'], entry['album_date'], 
+		 				(entry['title'], entry['track_number'], entry['disc_number'], entry['track_total'], entry['disc_total'], entry['year'], 
 		 				entry['media_type'], entry['album_artist'], entry['duration'], 
 		 				entry['file_size'], entry['location'], entry['mountpoint'], entry['mtime'], entry['first_seen'], entry['last_seen'], 
 		 				entry['rating'], entry['play_count'], entry['last_played'], entry['bitrate'], 
@@ -269,8 +383,118 @@ class RBSync(GObject.Object, Peas.Activatable):
 
 
 
+
+
+	def get_local_changes_since(self, last_sync_time):
+		conn = sqlite3.connect(rbsyncdb)
+		# conn.row_factory = sqlite3.Row
+		conn.row_factory = dict_factory
+
+		cursor=conn.cursor()
+		print ("Opened database successfully");
+		data_to_upload = []
+		cursor = conn.execute("SELECT * from track")
+		for row in cursor:
+			entry = {}
+			track_sync_time = row['sync_time'] or 0
+			if track_sync_time < last_sync_time:
+			# if False:
+				#queue entire entry, but skip if entry is NULL.
+				for key in row:
+					if row[key] != None: entry[key] = row[key]
+			else:
+				#only queue data where attribute _ch_time value is > track_sync_time (or attribute _ch_time value is null)
+				for key in row:
+					if "_ch_time" in key and (row[key] == None or row[key] > track_sync_time) :
+					# if "_ch_time" in key:
+						attr = key[:(len(key) - 8)]
+						if (row[attr] != None):
+							entry[attr] = row[attr]
+							if row[key] != None: entry[key] = row[key]
+							if attr == 'play_count': entry['local_play_count'] = row['local_play_count']
+
+						# entry[:(key)] = 
+						# print (key, attr, end='')
+			# print (row['artist'])
+			# string = "\nID = " + str(row["ID"]) + \
+			# "\ntitle = " + row["title"] + \
+			# "\nartist = " + row["artist"] + \
+			# "\nalbum = " + row["album"] + "\n"
+			# print(string)
+			# print(entry, "\n")
+			data_to_upload.append(entry)
+		conn.close()		
+		return data_to_upload
+
+		# return {"file": "Xena!"}
+
+
+
+
+
+
+
+
+
+	'''
+		Sync function (sync)
+		description:
+
+			scan through entries in rbsync db
+				find any entries where its last sync_time is older than any of its entry _ch_time values.
+				queue those for syncing with cloud (probably json). If this is first sync, entire rb_sync db is sent to cloud
+					-there are some values that don't change for entry, however, we could use these to identify files,
+					 so whole db entry gets sent
+					-a that has been added to the db after recent last sync is considered new data
+
+			(if no changes queued, we still connect to cloud to see if there are changes in the cloud (from other devices))
+
+			connect to cloud
+				check if this is the first sync.
+					If so, some identifiers need to be set up to associate device with particular identity for server.
+					Entire rbsyncdb is sent to server.
+					Server generates rbsync_id values for each entry, which prior to first sync should be empty.
+						These will be sent back with its entry updates (below)
+					Perhaps other tasks. 
+
+				If not first sync: still send queued data. 
+
+				Server then will determine if any other devices have more recent values for any attributes.
+					Server sends json data back to client (such as rbsync process inside rhythmbox)
+					If client is RBsync inside rhythmbox, rbsync submits updates to RB for RB to update its own db. 
+						Rhthmbox DB changes signal rbsync to then write changes to rbsyncdb.
+			
+			Notes: It would be nice to change this to a streaming process.
+	'''
+
 	def sync(self, action, data):
-		shell = self.object
+		last_sync_time = 1
+		changes = self.get_local_changes_since(last_sync_time)
+		changes = changes[:4]
+		print("changes", changes)
+		# for entry in changes:
+		# 	print ("\n\n", entry)
+		post_request_data = {'client_id' : client_id, 'changes' : changes }
+		print('data', post_request_data)
+		# r = requests.post("http://bugs.python.org", data={'number': 12524, 'type': 'issue', 'action': 'show'})
+		# r = requests.post(syncup_api, data={'name': 'Xena!'})
+		# r = requests.post(syncup_api, data=post_request_data)
+		# print(r.status_code, r.reason)
+		# print(r.text[:300] + '...')
+		# # req = urllib2.Request('http://example.com/api/posts/create')
+		# # req.add_header('Content-Type', 'application/json')
+
+		# # response = urllib2.urlopen(req, json.dumps(post_request_data))
+		# url = 'https://api.github.com/some/endpoint'
+		# payload = {'some': 'data'}
+		headers = {'content-type': 'application/json'}
+
+		r = requests.post(syncup_api, data=json.dumps(post_request_data), headers=headers)
+		print(r.status_code, r.reason)
+		print(r.text[:300] + '...')
+
+	def add_or_update_rbsyncdb(self, action, data):
+		# shell = self.object
 		print("action", action, "data", data)
 
 		#when run from the db_load_complete function, action is none and data is whatever I passed, the RhythDBTree last time I edited.
@@ -291,15 +515,15 @@ class RBSync(GObject.Object, Peas.Activatable):
 			# blah = action.get_name()
 			# print("action blah", blah)
 			action = None
-			data = shell.props.library_source.props.base_query_model
+			data = self.shell.props.library_source.props.base_query_model
 
 		else:
 			print("This appears to be a call to self.sync upon database load")
 			action = None
-			data = shell.props.library_source.props.base_query_model
+			data = self.shell.props.library_source.props.base_query_model
 			# print("Action not Gio.SimpleAction or was not matched properly")
 
-		# keywords = shell.props.db.keywords_get(RB.RhythmDBPropType.KEYWORD)
+		# keywords = self.db.keywords_get(RB.RhythmDBPropType.KEYWORD)
 		# print("Keywords", keywords)
 		entries = []
 		#iterate through all of library
@@ -308,12 +532,12 @@ class RBSync(GObject.Object, Peas.Activatable):
 			artist 		= entry.get_string(RB.RhythmDBPropType.ARTIST)
 			title 		= entry.get_string(RB.RhythmDBPropType.TITLE)
 			album		= entry.get_string(RB.RhythmDBPropType.ALBUM)
-			album_date	= entry.get_ulong(RB.RhythmDBPropType.DATE)
+			year			= entry.get_ulong(RB.RhythmDBPropType.DATE)
 			track_total	= entry.get_ulong(RB.RhythmDBPropType.TRACK_TOTAL)
 			disc_total	= entry.get_ulong(RB.RhythmDBPropType.DISC_TOTAL)
 			media_type	= entry.get_string(RB.RhythmDBPropType.MEDIA_TYPE)
 			album_artist	= entry.get_string(RB.RhythmDBPropType.ALBUM_ARTIST)
-			keywordsRBRef	= shell.props.db.entry_keywords_get(entry)
+			keywordsRBRef	= self.db.entry_keywords_get(entry)
 			keywords = []
 			for a_keyword in keywordsRBRef:
 				keywords.append(RB.RefString.get(a_keyword))
@@ -348,7 +572,7 @@ class RBSync(GObject.Object, Peas.Activatable):
 				"hidden":hidden, "bpm": bpm, "track_number":track_number, "disc_number":disc_number, "duration":duration, "file_size":file_size, 
 				"location":location, "mountpoint":mountpoint, "mtime":mtime, "first_seen":first_seen, "last_seen":last_seen, "rating":rating, 
 				"play_count":play_count, "last_played":last_played, "bitrate":bitrate, "status":status, "description":description, 
-				"subtitle":subtitle, "comment":comment, "post_time":post_time, "keywords":keywords, "album":album, "album_date":album_date, 
+				"subtitle":subtitle, "comment":comment, "post_time":post_time, "keywords":keywords, "album":album, "year":year, 
 				"track_total":track_total, "disc_total":disc_total, "media_type":media_type, "album_artist":album_artist, "action": action
 			}
 			entries.append(info)
@@ -359,10 +583,26 @@ class RBSync(GObject.Object, Peas.Activatable):
 
 		print("Hey")
 
+	def test(self, action, data):
+		print ("running self.test()")
+		entry = self.db.entry_lookup_by_id(82)
+		title = entry.get_string(RB.RhythmDBPropType.TITLE)
+		old_artist = entry.get_string(RB.RhythmDBPropType.ARTIST)
+		artist = GObject.Value()
+		artist.init(GObject.TYPE_STRING)
+		artist.set_string("Xena" + old_artist)		
+		# artist.set_string("Xena12345")		
+		change = {"prop": RB.RhythmDBPropType.ARTIST, 'new': artist}
+		print("title", title)
+		self.rbsync_update_track(entry, change)
 
 	def do_activate(self):
+		self.shell = self.object
+		self.db = self.shell.props.db
+		self.rbsync_updates_in_progress = {}
 		action = Gio.SimpleAction(name='rhythmbox-sync')
 		action.connect('activate', self.sync)
+		# action.connect('activate', self.add_or_update_rbsyncdb)
 
 		app = Gio.Application.get_default()
 		app.add_action(action)
@@ -383,8 +623,9 @@ class RBSync(GObject.Object, Peas.Activatable):
 		app.remove_plugin_menu_item('tools', 'sync-menu-item')
 		self.shell = None
 		self.db = None
-		# shell.disconnect (self.ecs_id)
-		# del self.ecs_id
+		self.rbsync_updates_in_progress = None
+		self.shell.disconnect (self.ecs_id)
+		del self.ecs_id
 
 GObject.type_register(RBSync)
 
